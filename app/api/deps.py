@@ -12,6 +12,7 @@ from app.core.security import InvalidTokenError, decode_token
 from app.db.session import get_db
 from app.models.org_member import OrgMember, OrgRole
 from app.models.project import Project
+from app.models.task import Task
 from app.models.user import User
 
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -126,5 +127,44 @@ def require_project_role(
                 detail=f"Requires {minimum_role.value} role or higher",
             )
         return project
+
+    return checker
+
+
+async def get_task_or_404(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Task:
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    return task
+
+
+def require_task_role(
+    minimum_role: OrgRole,
+) -> Callable[[Task], Coroutine[Any, Any, Task]]:
+    """Dependency factory: require at least `minimum_role` in the org that owns
+    the task's project. One level deeper than require_project_role — the path
+    only has a task id, so this resolves task -> project -> org.
+    """
+
+    async def checker(
+        task: Task = Depends(get_task_or_404),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> Task:
+        project = await db.get(Project, task.project_id)
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+        membership = await db.scalar(
+            select(OrgMember).where(
+                OrgMember.org_id == project.org_id, OrgMember.user_id == current_user.id
+            )
+        )
+        if membership is None or not role_satisfies(membership.role, minimum_role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires {minimum_role.value} role or higher",
+            )
+        return task
 
     return checker

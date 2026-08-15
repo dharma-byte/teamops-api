@@ -42,6 +42,7 @@ extend-immutable-calls = [
     "fastapi.Body",
     "app.api.deps.require_org_role",
     "app.api.deps.require_project_role",
+    "app.api.deps.require_task_role",
 ]
 
 [tool.mypy]
