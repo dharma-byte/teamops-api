@@ -1,5 +1,6 @@
 """Import every model here so Base.metadata is fully populated for Alembic autogenerate."""
 
+from app.models.approval import Approval, ApprovalStatus
 from app.models.base import Base
 from app.models.label import Label, TaskLabel
 from app.models.org_member import OrgMember, OrgRole
@@ -9,6 +10,8 @@ from app.models.task import Task, TaskPriority, TaskStatus
 from app.models.user import User
 
 __all__ = [
+    "Approval",
+    "ApprovalStatus",
     "Base",
     "Label",
     "OrgMember",
