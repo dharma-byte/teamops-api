@@ -1,11 +1,16 @@
 import uuid
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rbac import role_satisfies
 from app.core.security import InvalidTokenError, decode_token
 from app.db.session import get_db
+from app.models.org_member import OrgMember, OrgRole
 from app.models.user import User
 
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -41,3 +46,46 @@ async def get_current_user(
         raise credentials_error
 
     return user
+
+
+async def get_org_membership(
+    org_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> OrgMember:
+    """Resolve the caller's membership row for the org in the path.
+
+    403, not 404: confirming an org exists to a non-member leaks information
+    a non-member shouldn't have.
+    """
+    membership = await db.scalar(
+        select(OrgMember).where(
+            OrgMember.org_id == org_id, OrgMember.user_id == current_user.id
+        )
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not a member of this organization",
+        )
+    return membership
+
+
+def require_org_role(
+    minimum_role: OrgRole,
+) -> Callable[[OrgMember], Coroutine[Any, Any, OrgMember]]:
+    """Dependency factory: require at least `minimum_role` in the org from the path.
+
+    Usage: Depends(require_org_role(OrgRole.ADMIN)) on any endpoint whose path
+    includes {org_id}. RBAC lives here, server-side, not in frontend show/hide.
+    """
+
+    async def checker(membership: OrgMember = Depends(get_org_membership)) -> OrgMember:
+        if not role_satisfies(membership.role, minimum_role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires {minimum_role.value} role or higher",
+            )
+        return membership
+
+    return checker
