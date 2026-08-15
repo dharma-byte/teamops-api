@@ -34,5 +34,15 @@ class OrgMember(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
     role: Mapped[OrgRole] = mapped_column(
-        Enum(OrgRole, name="org_role", native_enum=True), default=OrgRole.MEMBER, nullable=False
+        Enum(
+            OrgRole,
+            name="org_role",
+            native_enum=True,
+            # Without this, SQLAlchemy sends the Python member NAME ("OWNER")
+            # instead of its VALUE ("owner") — but the Postgres enum type was
+            # created with lowercase values in the migration, so they'd mismatch.
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        default=OrgRole.MEMBER,
+        nullable=False,
     )
