@@ -11,6 +11,7 @@ from app.core.rbac import role_satisfies
 from app.core.security import InvalidTokenError, decode_token
 from app.db.session import get_db
 from app.models.org_member import OrgMember, OrgRole
+from app.models.project import Project
 from app.models.user import User
 
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -87,5 +88,43 @@ def require_org_role(
                 detail=f"Requires {minimum_role.value} role or higher",
             )
         return membership
+
+    return checker
+
+
+async def get_project_or_404(
+    project_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> Project:
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project
+
+
+def require_project_role(
+    minimum_role: OrgRole,
+) -> Callable[[Project], Coroutine[Any, Any, Project]]:
+    """Dependency factory: require at least `minimum_role` in the org that OWNS
+    the project in the path. Unlike require_org_role, the path only has a
+    project id — this resolves the project first, then checks the caller's
+    role in *that project's* org.
+    """
+
+    async def checker(
+        project: Project = Depends(get_project_or_404),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> Project:
+        membership = await db.scalar(
+            select(OrgMember).where(
+                OrgMember.org_id == project.org_id, OrgMember.user_id == current_user.id
+            )
+        )
+        if membership is None or not role_satisfies(membership.role, minimum_role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires {minimum_role.value} role or higher",
+            )
+        return project
 
     return checker
