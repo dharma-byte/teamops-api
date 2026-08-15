@@ -3,15 +3,28 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_task_role
+from app.api.deps import get_current_user, require_task_role
 from app.db.session import get_db
 from app.models.label import Label
 from app.models.org_member import OrgRole
 from app.models.project import Project
 from app.models.task import Task
+from app.models.user import User
+from app.schemas.approval import ApprovalDecision, ApprovalPublic
 from app.schemas.task import TaskPublic, TaskUpdate
+from app.services.approval_service import (
+    ApprovalAlreadyPendingError,
+    NoPendingApprovalError,
+    approve_task,
+    reject_task,
+    request_approval,
+)
 from app.services.label_service import attach_label, detach_label
-from app.services.task_service import update_task
+from app.services.task_service import (
+    DirectDoneTransitionError,
+    ensure_not_direct_done_transition,
+    update_task,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -30,8 +43,68 @@ async def update_task_endpoint(
     task: Task = Depends(require_task_role(OrgRole.MEMBER)),
 ) -> TaskPublic:
     updates = body.model_dump(exclude_unset=True)
+    try:
+        ensure_not_direct_done_transition(updates)
+    except DirectDoneTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tasks can only reach Done through the approval workflow "
+            "(POST /tasks/{task_id}/approve)",
+        ) from exc
     updated = await update_task(db, task, updates)
     return TaskPublic.model_validate(updated)
+
+
+@router.post(
+    "/{task_id}/request-approval",
+    response_model=ApprovalPublic,
+    status_code=status.HTTP_201_CREATED,
+)
+async def request_approval_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    task: Task = Depends(require_task_role(OrgRole.MEMBER)),
+) -> ApprovalPublic:
+    try:
+        approval = await request_approval(db, task, requested_by=current_user.id)
+    except ApprovalAlreadyPendingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An approval is already pending for this task",
+        ) from exc
+    return ApprovalPublic.model_validate(approval)
+
+
+@router.post("/{task_id}/approve", response_model=ApprovalPublic)
+async def approve_task_endpoint(
+    body: ApprovalDecision,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    task: Task = Depends(require_task_role(OrgRole.MANAGER)),
+) -> ApprovalPublic:
+    try:
+        approval = await approve_task(db, task, reviewer_id=current_user.id, notes=body.notes)
+    except NoPendingApprovalError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="No pending approval for this task"
+        ) from exc
+    return ApprovalPublic.model_validate(approval)
+
+
+@router.post("/{task_id}/reject", response_model=ApprovalPublic)
+async def reject_task_endpoint(
+    body: ApprovalDecision,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    task: Task = Depends(require_task_role(OrgRole.MANAGER)),
+) -> ApprovalPublic:
+    try:
+        approval = await reject_task(db, task, reviewer_id=current_user.id, notes=body.notes)
+    except NoPendingApprovalError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="No pending approval for this task"
+        ) from exc
+    return ApprovalPublic.model_validate(approval)
 
 
 async def _get_label_in_tasks_org(db: AsyncSession, task: Task, label_id: uuid.UUID) -> Label:
