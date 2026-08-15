@@ -8,6 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.task import Task, TaskPriority, TaskStatus
 
 
+class DirectDoneTransitionError(Exception):
+    """Raised when a caller tries to PATCH a task's status straight to Done.
+
+    Done is only reachable through the approval workflow (request_approval +
+    approve_task in approval_service) so there's always an auditable approver
+    on record — this is the actual enforcement of that rule, not a UI nicety.
+    """
+
+
+def ensure_not_direct_done_transition(updates: dict[str, Any]) -> None:
+    if updates.get("status") == TaskStatus.DONE:
+        raise DirectDoneTransitionError()
+
+
 async def create_task(
     db: AsyncSession,
     project_id: uuid.UUID,
